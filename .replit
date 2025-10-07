@@ -1,0 +1,4 @@
+run = "python main.py"
+language = "python3"
+[env]
+PYTHON_VERSION = "3.10"
