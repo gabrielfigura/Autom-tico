@@ -3,6 +3,7 @@ import os
 import random
 import signal
 import sys
+import logging
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -34,6 +35,37 @@ telegram_bot = Bot(token=TELEGRAM_TOKEN)
 # ID da mensagem de espera
 msg_espera_id = None
 
+# Configura logging para capturar erros e enviar pro Telegram
+class TelegramHandler(logging.Handler):
+    def __init__(self, chat_id, bot):
+        super().__init__()
+        self.chat_id = chat_id
+        self.bot = bot
+        self.last_error_time = 0
+        self.error_cooldown = 60  # 1min entre notificações do mesmo tipo para evitar spam
+
+    def emit(self, record):
+        if record.levelno >= logging.ERROR and time.time() - self.last_error_time > self.error_cooldown:
+            mensagem = f"🚨 ERRO NO BOT: {record.getMessage()}\n📅 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            try:
+                self.bot.send_message(chat_id=self.chat_id, text=mensagem, parse_mode='HTML')
+                self.last_error_time = time.time()
+            except TelegramError as e:
+                print(f"Falha ao enviar erro pro Telegram: {e}", file=sys.stderr)
+
+# Configura logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+telegram_handler = TelegramHandler(CHAT_ID, telegram_bot)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+telegram_handler.setFormatter(formatter)
+logger.addHandler(telegram_handler)
+
+# Console handler (para Replit)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
 # Stats globais
 acertos = 0
 erros = 0
@@ -56,7 +88,7 @@ PADROES = [
 ]
 
 def signal_handler(sig, frame):
-    print("\nShutdown gracioso...")
+    logger.info("Shutdown gracioso...")
     enviar_notificacao("Bot parando graciosamente. 👋")
     sys.exit(0)
 
@@ -69,9 +101,9 @@ def enviar_notificacao(mensagem, message_id=None):
         else:
             sent_msg = telegram_bot.send_message(chat_id=CHAT_ID, text=mensagem, parse_mode='HTML')
             return sent_msg.message_id
-        print(f"Notificação: {mensagem}", flush=True)
+        logger.info(f"Notificação: {mensagem}")
     except TelegramError as e:
-        print(f"Erro Telegram: {e}", flush=True)
+        logger.error(f"Erro Telegram: {e}")
 
 # Configura Firefox para Replit
 from webdriver_manager.firefox import GeckoDriverManager
@@ -94,10 +126,10 @@ for retry in range(max_retries):
     try:
         service = Service(GeckoDriverManager().install())
         driver = webdriver.Firefox(service=service, options=firefox_options)
-        print("Firefox Driver criado!", flush=True)
+        logger.info("Firefox Driver criado!")
         break
     except WebDriverException as e:
-        print(f"Retry {retry+1}/{max_retries} falhou: {e}", flush=True)
+        logger.error(f"Retry {retry+1}/{max_retries} falhou: {e}")
         if retry == max_retries - 1:
             raise Exception(f"Falha ao iniciar Firefox: {e}")
         time.sleep(2)
@@ -108,7 +140,7 @@ def reset_diario():
     if hoje > ultima_data:
         daily_apostas = 0
         ultima_data = hoje
-        print("Novo dia: resetado. Apostas diárias zeradas para 0/10.", flush=True)
+        logger.info("Novo dia: resetado. Apostas diárias zeradas para 0/10.")
         return True
     return False
 
@@ -121,8 +153,8 @@ def checar_saldo():
         texto_saldo = saldo_element.text.replace('KZ', '').replace(' ', '').replace(',', '').strip()
         saldo_atual = float(texto_saldo) if texto_saldo else 0.0
         return saldo_atual
-    except (TimeoutException, NoSuchElementException, ValueError):
-        print("Erro ao checar saldo, usando anterior.", flush=True)
+    except (TimeoutException, NoSuchElementException, ValueError) as e:
+        logger.error(f"Erro ao checar saldo: {e}. Usando saldo anterior.")
         return saldo_atual
 
 def atualizar_historico():
@@ -175,10 +207,10 @@ def atualizar_historico():
                 resultados.append('🔵')
         
         historico_resultados = resultados[-10:] if resultados else []
-        print(f"Histórico: {' '.join(historico_resultados)}", flush=True)
+        logger.info(f"Histórico: {' '.join(historico_resultados)}")
         return True
     except Exception as e:
-        print(f"Erro histórico: {e}", flush=True)
+        logger.error(f"Erro ao atualizar histórico: {e}")
         return False
     finally:
         if os.path.exists(temp_file):
@@ -237,95 +269,100 @@ try:
 
     ultimo_tempo_espera = time.time()
     while driver and (patrimonio_inicial - saldo_atual) <= LIMITE_PERDA:  # Para se perda > limite
-        if reset_diario():
-            enviar_notificacao(f"🌅 Novo dia! Apostas hoje: 0/{DAILY_MAX} (limite resetado)")
+        try:  # Try extra no loop para capturar erros inesperados
+            if reset_diario():
+                enviar_notificacao(f"🌅 Novo dia! Apostas hoje: 0/{DAILY_MAX} (limite resetado)")
 
-        if daily_apostas >= DAILY_MAX:
-            if msg_espera_id:
-                enviar_notificacao(f"🛑 Limite diário de {DAILY_MAX} apostas atingido (independente de resultados). Monitorando padrões sem apostar... ⏰", msg_espera_id)
-            time.sleep(300)  # Espera 5min, mas continua loop
-            continue
-
-        if not atualizar_historico():
-            time.sleep(random.uniform(8, 12))
-            continue
-
-        if time.time() - ultimo_tempo_espera > 15:
-            msg_espera = f"⏳ ESPERANDO PADRÃO... (Apostas hoje: {daily_apostas}/{DAILY_MAX})"
-            if msg_espera_id:
-                enviar_notificacao(msg_espera, msg_espera_id)
-            else:
-                msg_espera_id = enviar_notificacao(msg_espera)
-            ultimo_tempo_espera = time.time()
-
-        checar_padrao_formando()
-
-        tendencia = checar_padrao_formado()
-        if tendencia:
-            saldo_atual = checar_saldo()
-            if saldo_atual < MIN_SALDO:
-                enviar_notificacao(f"💸 Sem saldo: {saldo_atual} KZ")
-                break
-
-            try:
-                if tendencia == '🔴':
-                    botao_aposta = wait.until(EC.element_to_be_clickable((By.ID, 'bet-banker')))
-                else:
-                    botao_aposta = wait.until(EC.element_to_be_clickable((By.ID, 'bet-player')))
-                botao_aposta.click()
-                
-                valor_input = driver.find_element(By.ID, 'bet-amount')
-                valor_input.clear()
-                valor_input.send_keys(str(APOSTA_VALOR))
-                confirm_button = driver.find_element(By.ID, 'confirm-bet')
-                confirm_button.click()
-
-                daily_apostas += 1  # Incrementa SÓ aqui: após detecção + aposta confirmada
-                apostas_feitas += 1
-                print(f"Aposta {daily_apostas}/{DAILY_MAX} realizada em {tendencia}! (Total: {apostas_feitas})", flush=True)
-
-                if daily_apostas >= DAILY_MAX:
-                    enviar_notificacao(f"🛑 Última aposta do dia ({daily_apostas}/{DAILY_MAX})! Parando apostas até amanhã.")
-
+            if daily_apostas >= DAILY_MAX:
                 if msg_espera_id:
-                    enviar_notificacao(f"🎯 APOSTANDO em {tendencia}! ⏳ ({daily_apostas}/{DAILY_MAX})", msg_espera_id)
+                    enviar_notificacao(f"🛑 Limite diário de {DAILY_MAX} apostas atingido (independente de resultados). Monitorando padrões sem apostar... ⏰", msg_espera_id)
+                time.sleep(300)  # Espera 5min, mas continua loop
+                continue
 
-                time.sleep(random.uniform(55, 65))  # Variação para rodada
+            if not atualizar_historico():
+                time.sleep(random.uniform(8, 12))
+                continue
 
-                # Salva histórico anterior para comparar
-                historico_anterior = historico_resultados[:]
-                atualizar_historico()
-                if len(historico_resultados) > len(historico_anterior):
-                    ultimo_resultado = historico_resultados[-1]
+            if time.time() - ultimo_tempo_espera > 15:
+                msg_espera = f"⏳ ESPERANDO PADRÃO... (Apostas hoje: {daily_apostas}/{DAILY_MAX})"
+                if msg_espera_id:
+                    enviar_notificacao(msg_espera, msg_espera_id)
                 else:
-                    ultimo_resultado = None
+                    msg_espera_id = enviar_notificacao(msg_espera)
+                ultimo_tempo_espera = time.time()
 
-                if ultimo_resultado == tendencia:
-                    acertos += 1
-                    resultado = f"Green✅ ({tendencia})"
-                else:
-                    erros += 1
-                    resultado = f"Errei❌ ({tendencia})"
+            checar_padrao_formando()
 
-                saldo_atual = checar_saldo()  # Sempre checa real
+            tendencia = checar_padrao_formado()
+            if tendencia:
+                saldo_atual = checar_saldo()
+                if saldo_atual < MIN_SALDO:
+                    enviar_notificacao(f"💸 Sem saldo: {saldo_atual} KZ")
+                    break
 
-                taxa = (acertos / (acertos + erros) * 100) if (acertos + erros) > 0 else 0
-                msg = f"{resultado}<br>💰 Saldo: {saldo_atual} KZ<br>📊 Acertos: {acertos} | Erros: {erros} | Taxa: {taxa:.1f}%<br>📅 Apostas hoje: {daily_apostas}/{DAILY_MAX}"
-                enviar_notificacao(msg)
-                print(msg, flush=True)
+                try:
+                    if tendencia == '🔴':
+                        botao_aposta = wait.until(EC.element_to_be_clickable((By.ID, 'bet-banker')))
+                    else:
+                        botao_aposta = wait.until(EC.element_to_be_clickable((By.ID, 'bet-player')))
+                    botao_aposta.click()
+                    
+                    valor_input = driver.find_element(By.ID, 'bet-amount')
+                    valor_input.clear()
+                    valor_input.send_keys(str(APOSTA_VALOR))
+                    confirm_button = driver.find_element(By.ID, 'confirm-bet')
+                    confirm_button.click()
 
-            except (TimeoutException, NoSuchElementException) as e:
-                print(f"Erro na aposta: {e}. Pulando (contador não incrementado).", flush=True)
-                enviar_notificacao(f"⚠️ Erro na aposta ({tendencia}): {str(e)[:50]}... (sem contar no limite)")
+                    daily_apostas += 1  # Incrementa SÓ aqui: após detecção + aposta confirmada
+                    apostas_feitas += 1
+                    logger.info(f"Aposta {daily_apostas}/{DAILY_MAX} realizada em {tendencia}! (Total: {apostas_feitas})")
+
+                    if daily_apostas >= DAILY_MAX:
+                        enviar_notificacao(f"🛑 Última aposta do dia ({daily_apostas}/{DAILY_MAX})! Parando apostas até amanhã.")
+
+                    if msg_espera_id:
+                        enviar_notificacao(f"🎯 APOSTANDO em {tendencia}! ⏳ ({daily_apostas}/{DAILY_MAX})", msg_espera_id)
+
+                    time.sleep(random.uniform(55, 65))  # Variação para rodada
+
+                    # Salva histórico anterior para comparar
+                    historico_anterior = historico_resultados[:]
+                    atualizar_historico()
+                    if len(historico_resultados) > len(historico_anterior):
+                        ultimo_resultado = historico_resultados[-1]
+                    else:
+                        ultimo_resultado = None
+
+                    if ultimo_resultado == tendencia:
+                        acertos += 1
+                        resultado = f"Green✅ ({tendencia})"
+                    else:
+                        erros += 1
+                        resultado = f"Errei❌ ({tendencia})"
+
+                    saldo_atual = checar_saldo()  # Sempre checa real
+
+                    taxa = (acertos / (acertos + erros) * 100) if (acertos + erros) > 0 else 0
+                    msg = f"{resultado}<br>💰 Saldo: {saldo_atual} KZ<br>📊 Acertos: {acertos} | Erros: {erros} | Taxa: {taxa:.1f}%<br>📅 Apostas hoje: {daily_apostas}/{DAILY_MAX}"
+                    enviar_notificacao(msg)
+                    logger.info(msg)
+
+                except (TimeoutException, NoSuchElementException) as e:
+                    logger.error(f"Erro na aposta ({tendencia}): {e}. Pulando (contador não incrementado).")
+                    enviar_notificacao(f"⚠️ Erro na aposta ({tendencia}): {str(e)[:50]}... (sem contar no limite)")
+
                 time.sleep(10)
 
-        else:
-            time.sleep(random.uniform(8, 12))
+            else:
+                time.sleep(random.uniform(8, 12))
+        except Exception as loop_error:  # Captura erros inesperados no loop
+            logger.error(f"Erro inesperado no loop principal: {loop_error}")
+            time.sleep(30)  # Pausa antes de retry
 
 except Exception as e:
     erro_msg = f"❌ Erro crítico: {str(e)}"
+    logger.error(erro_msg)
     enviar_notificacao(erro_msg)
-    print(erro_msg, flush=True)
 
 finally:
     if msg_espera_id:
@@ -338,6 +375,6 @@ finally:
     taxa_final = (acertos / total_apostas * 100) if total_apostas > 0 else 0
     msg_final = f"🔚 Bot finalizado.<br>💰 Saldo final: {saldo_final} KZ<br>📊 Acertos: {acertos}/{total_apostas} | Erros: {erros} | Taxa: {taxa_final:.1f}%<br>📅 Apostas hoje: {daily_apostas}/{DAILY_MAX}"
     enviar_notificacao(msg_final)
-    print(msg_final, flush=True)
+    logger.info(msg_final)
     if 'driver' in locals() and driver:
         driver.quit()
