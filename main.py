@@ -4,26 +4,51 @@ import random
 import signal
 import sys
 import logging
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
-import cv2
-import numpy as np
-from telegram import Bot
-from telegram.error import TelegramError
 from datetime import date
+
+# TENTATIVA INICIAL DE IMPORTS COM NOTIFICAÇÃO DE ERRO PARA TELEGRAM
+TELEGRAM_TOKEN = "7758723414:AAF-Zq1QPoGy2IS-iK2Wh28PfexP0_mmHHc"  # Hardcoded temporário para erros iniciais
+CHAT_ID = "-1002506692600"
+
+def notify_import_error(erro):
+    try:
+        from telegram import Bot
+        from telegram.error import TelegramError
+        bot = Bot(token=TELEGRAM_TOKEN)
+        msg = f"🚨 ERRO INICIAL NO BOT (Import): {str(erro)}\n📅 {time.strftime('%Y-%m-%d %H:%M:%S')}\n💡 Rode 'pip install -r requirements.txt' no shell!"
+        bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+    except:
+        pass  # Se Telegram falhar, pelo menos printa
+
+# Tenta imports críticos
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+    import cv2
+    import numpy as np
+    from telegram import Bot
+    from telegram.error import TelegramError
+    from webdriver_manager.firefox import GeckoDriverManager
+    from selenium.webdriver.firefox.service import Service
+    from selenium.webdriver.firefox.options import Options as FirefoxOptions
+    print("Todos imports OK! Iniciando bot...")
+except ImportError as e:
+    print(f"ERRO DE IMPORT: {e}", file=sys.stderr)
+    notify_import_error(e)
+    sys.exit(1)
 
 # CONFIGURAÇÕES HARDCODED - EDITE AQUI COM SEUS VALORES REAIS (SEGURANÇA: NÃO PUSH SEM ALTERAR!)
 USERNAME = '931787918'  # Seu login Elephant Bet Angola
 PASSWORD = '97713'  # Sua senha
-TELEGRAM_TOKEN = "8344261996:AAEgDWaIb7hzknPpTQMdiYKSE3hjzP0mqFc"
-CHAT_ID = "-1002783091818"
+TELEGRAM_TOKEN = "7758723414:AAF-Zq1QPoGy2IS-iK2Wh28PfexP0_mmHHc"
+CHAT_ID = "-1002506692600"
 APOSTA_VALOR = 1000  # Valor fixo da aposta em KZ
 MIN_SALDO = 1000  # Mínimo para apostar
 DAILY_MAX = 10  # Máximo 10 apostas POR DIA (só quando detecta tendência, independente de acerto/erro)
-LIMITE_PERDA = 3  # Pare se perda total > isso (em KZ)
+LIMITE_PERDA = 3000  # Pare se perda total > isso (em KZ)
 
 # Verifica credenciais (agora hardcoded, sempre "existem")
 if not all([USERNAME, PASSWORD, TELEGRAM_TOKEN, CHAT_ID]):
@@ -104,11 +129,6 @@ def enviar_notificacao(mensagem, message_id=None):
         logger.info(f"Notificação: {mensagem}")
     except TelegramError as e:
         logger.error(f"Erro Telegram: {e}")
-
-# Configura Firefox para Replit
-from webdriver_manager.firefox import GeckoDriverManager
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
 
 firefox_options = FirefoxOptions()
 firefox_options.add_argument('--headless')
