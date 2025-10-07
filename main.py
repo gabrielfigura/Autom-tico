@@ -23,7 +23,7 @@ CHAT_ID = "-1002783091818"
 APOSTA_VALOR = 1000  # Valor fixo da aposta em KZ
 MIN_SALDO = 1000  # Mínimo para apostar
 DAILY_MAX = 10  # Máximo 10 apostas POR DIA (só quando detecta tendência, independente de acerto/erro)
-LIMITE_PERDA = 3000  # Pare se perda total > isso (em KZ)
+LIMITE_PERDA = 3  # Pare se perda total > isso (em KZ)
 
 # Verifica credenciais (agora hardcoded, sempre "existem")
 if not all([USERNAME, PASSWORD, TELEGRAM_TOKEN, CHAT_ID]):
