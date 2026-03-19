@@ -23,7 +23,6 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 }
 ANGOLA_TZ = pytz.timezone('Africa/Luanda')
-
 OUTCOME_MAP = {
     "PlayerWon": "🔵",
     "BankerWon": "🔴",
@@ -45,7 +44,6 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)-5s | %(message)s'
 )
 logger = logging.getLogger("BacBoBot")
-
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # ─── STICKERS ───
@@ -109,6 +107,19 @@ def load_state():
         logger.info("Nenhum estado anterior encontrado, começando do zero.")
     except Exception as e:
         logger.debug(f"Erro ao carregar estado: {e}")
+
+def check_reset_placar():
+    """Zera o placar quando total de greens atingir 500."""
+    if state["total_greens"] >= 500:
+        state["total_greens"] = 0
+        state["greens_sem_gale"] = 0
+        state["greens_gale_1"] = 0
+        state["greens_gale_2"] = 0
+        state["total_empates"] = 0
+        state["total_losses"] = 0
+        state["greens_seguidos"] = 0
+        save_state()
+        logger.info("🔄 Placar zerado após 500 greens atingidos")
 
 # ─── TELEGRAM HELPERS ───
 async def send_to_channel(text: str, parse_mode="HTML", disable_preview=True, reply_to_message_id=None) -> Optional[int]:
@@ -194,19 +205,15 @@ async def update_history_from_api(session) -> bool:
         items = data.get("data", [])
         if not isinstance(items, list) or len(items) == 0:
             return False
-
         latest = items[0]
         round_id = latest.get("id")
         if not round_id:
             return False
-
         if state["last_round_id"] == round_id:
             return False
-
         outcome_raw = latest.get("result")
         if not outcome_raw:
             return False
-
         score = latest.get("score")
         outcome = OUTCOME_MAP.get(outcome_raw)
         if not outcome:
@@ -214,27 +221,21 @@ async def update_history_from_api(session) -> bool:
             if "player" in s: outcome = "🔵"
             elif "banker" in s: outcome = "🔴"
             elif any(x in s for x in ["tie", "empate", "draw"]): outcome = "🟡"
-
         if not outcome:
             return False
-
         state["last_round_id"] = round_id
         state["history"].append(outcome)
         state["player_score_last"] = None
         state["banker_score_last"] = None
-
         if len(state["history"]) > 200:
             state["history"].pop(0)
-
         logger.info(f"🔔 NOVA RODADA DETECTADA: {outcome} (round {round_id}, score={score})")
         return True
-
     except Exception as e:
         logger.debug(f"Erro processando API: {e}")
         return False
 
 # ─── PADRÕES DE SINAL (Longest Match First) ───
-
 PATTERNS = [
     {"id": 13, "sequencia": ["🔵", "🔵", "🔵", "🔴", "🔴", "🔵", "🔵"], "sinal": "🔴"},
     {"id": 14, "sequencia": ["🔴", "🔴", "🔴", "🔵", "🔵", "🔴", "🔴"], "sinal": "🔵"},
@@ -293,22 +294,17 @@ PATTERNS = [
 # Pré-ordenar: padrão mais longo primeiro, depois ID maior em caso de empate
 PATTERNS.sort(key=lambda p: (-len(p["sequencia"]), -p["id"]))
 
-
 # ─── MOTOR DE DECISÃO (PATTERN MATCHING) ───
-
 def gerar_sinal_estrategia(history: List[str], player_score=None, banker_score=None) -> Tuple[Optional[str], Optional[str]]:
     if len(history) < 2:
         return None, None
-
     for pattern in PATTERNS:
         seq = pattern["sequencia"]
         seq_len = len(seq)
         if len(history) >= seq_len and history[-seq_len:] == seq:
             nome = f"Padrão #{pattern['id']} ({''.join(seq)})"
             return nome, pattern["sinal"]
-
     return None, None
-
 
 # ─── MENSAGEM DE SINAL ───
 def main_entry_text(color: str) -> str:
@@ -350,10 +346,8 @@ async def resolve_after_result():
         return
     if state["last_signal_round_id"] and state["last_signal_round_id"] >= state["last_round_id"]:
         return
-
     last_outcome = state["history"][-1]
     state["last_result_round_id"] = state["last_round_id"]
-
     target = state["last_signal_color"]
     acertou = last_outcome == target
     is_tie = last_outcome == "🟡"
@@ -363,7 +357,6 @@ async def resolve_after_result():
         state["total_greens"] += 1
         state["greens_seguidos"] += 1
         gale = state["martingale_count"]
-
         if gale == 0:
             state["greens_sem_gale"] += 1
             green_text = "GREEN DE PRIMEIRA✅"
@@ -380,20 +373,18 @@ async def resolve_after_result():
         await send_sticker_to_channel(GREEN_STICKER_ID)
         # 3) Placar com sequência de greens
         await send_to_channel(format_placar())
-
         await clear_gale_messages()
         _reset_signal_state()
         save_state()
+        check_reset_placar()
         return
 
     # ─── ERROU ───
     state["martingale_count"] += 1
-
     if state["martingale_count"] == 1:
         # Primeiro gale
         await send_gale_warning(1)
         return
-
     if state["martingale_count"] == 2:
         # Segundo gale
         await send_gale_warning(2)
@@ -402,45 +393,37 @@ async def resolve_after_result():
     # Já passou do gale 2 (martingale_count >= 3) → LOSS
     state["greens_seguidos"] = 0
     state["total_losses"] += 1
-
     await send_sticker_to_channel(LOSS_STICKER_ID)
     await send_to_channel(format_placar())
     await clear_gale_messages()
     _reset_signal_state()
     save_state()
+    check_reset_placar()
     await refresh_analise_message()
 
 async def try_send_signal():
     now = datetime.now().timestamp()
-
     if state["waiting_for_result"]:
         await delete_analise_message()
         return
-
     if now < state["signal_cooldown_until"]:
         return
-
     if len(state["history"]) < 2:
         return
-
     padrao, cor = gerar_sinal_estrategia(
         state["history"],
         state.get("player_score_last"),
         state.get("banker_score_last")
     )
-
     if not cor:
         await refresh_analise_message()
         return
-
     seq = "".join(state["history"][-7:])
     if state["last_signal_pattern"] == padrao and state["last_signal_sequence"] == seq:
         await refresh_analise_message()
         return
-
     await delete_analise_message()
     state["martingale_message_ids"] = []
-
     msg_id = await send_to_channel(main_entry_text(cor), disable_preview=False)
     if msg_id:
         state["entrada_message_id"] = msg_id
